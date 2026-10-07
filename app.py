@@ -15,6 +15,7 @@ app = Flask(__name__)
 DATABASE_URL = os.getenv("DATABASE_URL")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = os.getenv("GROUP_ID")
+ADMIN_ID = os.getenv("ADMIN_ID")
 DHAKA = ZoneInfo("Asia/Dhaka")
 
 MIN_ACTIVE_DAYS = 5
@@ -214,6 +215,7 @@ def search_member():
             "score": row["score"],
             "rank": rank,
             "eligible": row["eligible"],
+            "is_admin": bool(ADMIN_ID and int(ADMIN_ID) == int(row["user_id"])),
             "active_days": int(row.get("active_days") or 0),
             "message_count": int(row.get("message_count") or 0),
             "estimated_time": duration(row.get("activity_time_seconds")),
