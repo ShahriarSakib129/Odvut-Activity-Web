@@ -246,68 +246,46 @@ def leaderboard():
         return jsonify({"ok": False, "error": "Leaderboard unavailable."}), 500
 
 
-@app.get("/api/search")
-def search_member():
-    query = (request.args.get("q") or "").strip()
-    if not query:
-        return jsonify({"ok": False, "error": "Enter username or Telegram ID."}), 400
-    try:
-        month = valid_month(request.args.get("month"))
-        with db() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                if query.isdigit():
-                    cur.execute("""
-                        SELECT user_id, username, first_name, message_count, active_days, activity_time_seconds
-                        FROM public.activity_logs
-                        WHERE chat_id=%s AND month=%s AND user_id=%s
-                        LIMIT 1
-                    """, (int(GROUP_ID), month, int(query)))
-                else:
-                    username = query.lstrip("@").lower()
-                    if not USERNAME_RE.fullmatch(query):
-                        return jsonify({"ok": False, "error": "Invalid username or Telegram ID."}), 400
-                    cur.execute("""
-                        SELECT user_id, username, first_name, message_count, active_days, activity_time_seconds
-                        FROM public.activity_logs
-                        WHERE chat_id=%s AND month=%s AND lower(username)=lower(%s)
-                        LIMIT 1
-                    """, (int(GROUP_ID), month, username))
-                row = cur.fetchone()
-
-        if not row:
-            return jsonify({"ok": False, "error": "Member not found for this month."}), 404
-
-        row["score"] = score(row)
-        row["eligible"] = int(row.get("active_days") or 0) >= MIN_ACTIVE_DAYS
-        eligible_rows = [r for r in fetch_rows(month) if r["eligible"]]
-        rank = next((i + 1 for i, r in enumerate(eligible_rows) if int(r["user_id"]) == int(row["user_id"])), None)
-        return jsonify({"ok": True, "month": month, "member": {
-            "user_id": int(row["user_id"]),
-            "username": row.get("username") or "",
-            "first_name": row.get("first_name") or "Member",
-            "score": row["score"],
-            "rank": rank,
-            "eligible": row["eligible"],
-            "is_admin": bool(ADMIN_ID and int(ADMIN_ID) == int(row["user_id"])),
-            "active_days": int(row.get("active_days") or 0),
-            "message_count": int(row.get("message_count") or 0),
-            "estimated_time": duration(row.get("activity_time_seconds")),
-        }})
-    except ValueError:
-        return jsonify({"ok": False, "error": "Invalid month. Use YYYY-MM."}), 400
-    except Exception:
-        app.logger.exception("Member search failed")
-        return jsonify({"ok": False, "error": "Search unavailable."}), 500
-
-
 @app.get("/api/me")
 def my_activity():
+    """Return only the authenticated Telegram user's activity/card data.
+
+    Admins are intentionally not tracked by the activity bot, so an admin
+    gets a synthetic admin payload instead of a misleading "no activity"
+    error. No user ID from the browser is trusted.
+    """
     init_data = request.headers.get("X-Telegram-Init-Data", "")
     user = validate_telegram_init_data(init_data)
     if not user:
         return jsonify({"ok": False, "error": "Open this Activity Mini App from Telegram."}), 401
+
     try:
         month = valid_month(request.args.get("month"))
+        user_id = int(user["id"])
+        is_admin = bool(ADMIN_ID and user_id == int(ADMIN_ID))
+
+        # Admins are excluded from activity tracking. Still allow the admin
+        # to open their own card and receive the special admin message.
+        if is_admin:
+            return jsonify({
+                "ok": True,
+                "month": month,
+                "member": {
+                    "user_id": user_id,
+                    "username": user.get("username") or "",
+                    "first_name": user.get("first_name") or "Admin",
+                    "photo_url": user.get("photo_url") or "",
+                    "score": 0,
+                    "rank": None,
+                    "eligible": False,
+                    "is_admin": True,
+                    "active_days": 0,
+                    "message_count": 0,
+                    "estimated_time": "0m",
+                    "month": month,
+                },
+            })
+
         with db() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
@@ -315,14 +293,21 @@ def my_activity():
                     FROM public.activity_logs
                     WHERE chat_id=%s AND month=%s AND user_id=%s
                     LIMIT 1
-                """, (int(GROUP_ID), month, int(user["id"])))
+                """, (int(GROUP_ID), month, user_id))
                 row = cur.fetchone()
+
         if not row:
             return jsonify({"ok": False, "error": "এই মাসে আপনার কোনো activity record পাওয়া যায়নি।"}), 404
+
         row["score"] = score(row)
         row["eligible"] = int(row.get("active_days") or 0) >= MIN_ACTIVE_DAYS
-        is_admin = bool(ADMIN_ID and int(ADMIN_ID) == int(user["id"]))
-        return jsonify({"ok": True, "month": month, "member": member_payload(row, month, rank_for_user(month, user["id"]), is_admin)})
+        payload = member_payload(row, month, rank_for_user(month, user_id), False)
+        # Telegram's verified Mini App identity is authoritative for the
+        # display name/username when available.
+        payload["first_name"] = user.get("first_name") or payload["first_name"]
+        payload["username"] = user.get("username") or payload["username"]
+        payload["photo_url"] = user.get("photo_url") or ""
+        return jsonify({"ok": True, "month": month, "member": payload})
     except ValueError:
         return jsonify({"ok": False, "error": "Invalid month. Use YYYY-MM."}), 400
     except Exception:
