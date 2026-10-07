@@ -23,15 +23,10 @@
 
     <section class="search-card">
       <div>
-        <h2>🔎 Check Activity</h2>
-        <p>Username or Telegram ID দিয়ে member খুঁজুন। Personal data দেখতে <b>View Activity</b> চাপুন।</p>
-      </div>
-      <div class="search-row">
-        <input id="search" autocomplete="off" placeholder="@username or Telegram ID">
-        <button id="searchBtn">Search</button>
+        <h2>🎴 Your Activity</h2>
+        <p>শুধু আপনার নিজের Activity Card দেখতে নিচের button চাপুন। অন্য কোনো member-এর personal activity এখানে দেখা যাবে না।</p>
       </div>
       <button id="getMyCard" class="get-card-btn">🎴 Get Your Activity Card</button>
-      <div id="searchResult"></div>
     </section>
 
     <section class="leader-card">
@@ -43,14 +38,6 @@
       <div id="empty" class="state hidden">No eligible members for this month.</div>
       <div id="leaderboard" class="leaderboard"></div>
     </section>
-
-    <div id="detailsModal" class="modal hidden" aria-hidden="true">
-      <div class="modal-backdrop" data-close="1"></div>
-      <div class="modal-card">
-        <button class="modal-close" id="closeModal">×</button>
-        <div id="detailsContent"></div>
-      </div>
-    </div>
 
     <div id="cardModal" class="modal hidden" aria-hidden="true">
       <div class="modal-backdrop" data-close-card="1"></div>
