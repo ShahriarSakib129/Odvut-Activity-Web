@@ -6,6 +6,9 @@ if (tg) { tg.ready(); tg.expand(); }
 function esc(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 function medal(i){return i===1?'🥇':i===2?'🥈':i===3?'🥉':i}
 function avatar(m){return m.photo_url || `/avatar/${m.user_id}`}
+// Always use our same-origin Telegram photo proxy for the Activity Card render.
+// Telegram's photo_url is cross-origin and html2canvas will omit it from the exported PNG.
+function cardAvatar(m){return `/avatar/${m.user_id}`}
 function initDataHeaders(){return tg?.initData?{'X-Telegram-Init-Data':tg.initData}: {}}
 
 let currentMember = null;
@@ -34,7 +37,9 @@ function adminComment(){let i=Number(localStorage.getItem('odvut-admin-comment-i
 function openActivityCard(m){
   currentMember = m;
   currentMedia = null;
-  $('#cardAvatar').src=avatar(m);
+  const cardImg=$('#cardAvatar');
+  cardImg.crossOrigin='anonymous';
+  cardImg.src=cardAvatar(m);
   $('#cardName').textContent=m.first_name||'Member';
   $('#cardHandle').textContent=m.username?`@${m.username}`:'ODVUT INFO member';
   const admin=m.is_admin===true;
@@ -65,7 +70,19 @@ function canvasToBlob(canvas){return new Promise((resolve,reject)=>canvas.toBlob
 async function renderCardBlob(){
   const el=$('#activityCard');
   if(!window.html2canvas) throw new Error('Card renderer is still loading. Please try again.');
-  const canvas=await html2canvas(el,{scale:3,useCORS:true,allowTaint:false,backgroundColor:null,logging:false});
+  // Wait for the same-origin profile image to be fully decoded before html2canvas captures the card.
+  const img=$('#cardAvatar');
+  if(img && !img.complete){
+    await new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>reject(new Error('Profile photo is still loading. Please try again.')),8000);
+      img.addEventListener('load',()=>{clearTimeout(timer);resolve()}, {once:true});
+      img.addEventListener('error',()=>{clearTimeout(timer);reject(new Error('Profile photo could not be loaded.'))}, {once:true});
+    });
+  }
+  if(img?.decode){
+    try{await img.decode()}catch(_){}
+  }
+  const canvas=await html2canvas(el,{scale:3,useCORS:true,allowTaint:false,backgroundColor:null,logging:false,imageTimeout:10000});
   return {canvas,blob:await canvasToBlob(canvas)};
 }
 
