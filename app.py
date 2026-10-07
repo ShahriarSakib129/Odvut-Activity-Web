@@ -7,11 +7,14 @@ from datetime import datetime
 import time
 from zoneinfo import ZoneInfo
 from io import BytesIO
+import base64
+import secrets
+from pathlib import Path
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import requests
-from flask import Flask, jsonify, render_template, request, Response
+from flask import Flask, jsonify, render_template, request, Response, url_for
 from urllib.parse import parse_qsl
 
 app = Flask(__name__)
@@ -35,6 +38,9 @@ USERNAME_RE = re.compile(r"^@?[A-Za-z0-9_]{1,32}$")
 # Small in-memory cache so a leaderboard does not call Telegram repeatedly.
 PHOTO_CACHE = {}
 PHOTO_CACHE_TTL = 600
+MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "/tmp/odvut_activity_media"))
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+MEDIA_TTL = 3600
 
 ADMIN_COMMENTS = [
     "👑 আপনি Admin! আপনার আবার Activity Score কীসের? আপনি তো activity-র হিসাব রাখেন! 😎",
@@ -198,6 +204,33 @@ def validate_telegram_init_data(init_data):
         return None
 
 
+
+
+def authenticated_miniapp_user():
+    init_data = request.headers.get("X-Telegram-Init-Data", "")
+    return validate_telegram_init_data(init_data)
+
+
+def cleanup_media():
+    cutoff = time.time() - MEDIA_TTL
+    try:
+        for path in MEDIA_DIR.glob("*.png"):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def save_media_bytes(data):
+    cleanup_media()
+    token = secrets.token_urlsafe(24)
+    path = MEDIA_DIR / f"{token}.png"
+    path.write_bytes(data)
+    return token
+
 def rank_for_user(month, user_id):
     eligible_rows = [r for r in fetch_rows(month) if r["eligible"]]
     return next((i + 1 for i, r in enumerate(eligible_rows) if int(r["user_id"]) == int(user_id)), None)
@@ -314,6 +347,115 @@ def my_activity():
         app.logger.exception("Mini App activity lookup failed")
         return jsonify({"ok": False, "error": "Activity unavailable."}), 500
 
+
+
+
+@app.post("/api/card-media")
+def card_media():
+    """Store a freshly rendered personal card temporarily for Telegram sharing/downloading."""
+    user = authenticated_miniapp_user()
+    if not user:
+        return jsonify({"ok": False, "error": "Open this Activity Mini App from Telegram."}), 401
+    upload = request.files.get("file")
+    if not upload:
+        return jsonify({"ok": False, "error": "Card image is missing."}), 400
+    data = upload.read()
+    if not data or len(data) > 6 * 1024 * 1024:
+        return jsonify({"ok": False, "error": "Card image is too large."}), 400
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return jsonify({"ok": False, "error": "Only PNG card images are accepted."}), 400
+    token = save_media_bytes(data)
+    base = os.getenv("PUBLIC_URL", "").rstrip("/") or f"https://{request.host}"
+    return jsonify({
+        "ok": True,
+        "url": f"{base}/media/activity/{token}.png",
+        "download_url": f"{base}/media/download/{token}.png",
+    })
+
+
+def _media_path(token):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{20,64}", token):
+        return None
+    path = MEDIA_DIR / f"{token}.png"
+    return path if path.exists() else None
+
+
+@app.get("/media/activity/<token>.png")
+def card_media_file(token):
+    path = _media_path(token)
+    if not path:
+        return jsonify({"ok": False, "error": "Media expired."}), 404
+    return Response(
+        path.read_bytes(),
+        mimetype="image/png",
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "Content-Disposition": "inline; filename=\"odvut-info-activity-card.png\"",
+        },
+    )
+
+
+@app.get("/media/download/<token>.png")
+def card_media_download(token):
+    path = _media_path(token)
+    if not path:
+        return jsonify({"ok": False, "error": "Media expired."}), 404
+    return Response(
+        path.read_bytes(),
+        mimetype="image/png",
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "Content-Disposition": 'attachment; filename="odvut-info-activity-card.png"',
+            "Access-Control-Allow-Origin": "https://web.telegram.org",
+        },
+    )
+
+
+@app.post("/api/prepare-share")
+def prepare_share():
+    """Prepare the user's card as a Telegram media message for WebApp.shareMessage."""
+    user = authenticated_miniapp_user()
+    if not user:
+        return jsonify({"ok": False, "error": "Open this Activity Mini App from Telegram."}), 401
+    payload = request.get_json(silent=True) or {}
+    media_url = str(payload.get("media_url") or "")
+    caption = str(payload.get("caption") or "ODVUT INFO Activity Card")[:1024]
+    expected_base = os.getenv("PUBLIC_URL", "").rstrip("/") or f"https://{request.host}"
+    if not media_url.startswith(expected_base + "/media/activity/"):
+        return jsonify({"ok": False, "error": "Invalid card media URL."}), 400
+    if not BOT_TOKEN:
+        return jsonify({"ok": False, "error": "BOT_TOKEN is not configured."}), 500
+
+    result = {
+        "type": "photo",
+        "id": secrets.token_hex(8),
+        "photo_url": media_url,
+        "thumbnail_url": media_url,
+        "caption": caption,
+    }
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/savePreparedInlineMessage",
+            json={
+                "user_id": int(user["id"]),
+                "result": json.dumps(result, ensure_ascii=False),
+                "allow_group_chats": True,
+            },
+            timeout=12,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if not data.get("ok"):
+            app.logger.error("savePreparedInlineMessage failed: %s", data)
+            return jsonify({"ok": False, "error": "Telegram could not prepare the card for sharing."}), 502
+        prepared = data.get("result") or {}
+        prepared_id = prepared.get("id")
+        if not prepared_id:
+            return jsonify({"ok": False, "error": "Telegram returned no prepared message ID."}), 502
+        return jsonify({"ok": True, "id": prepared_id})
+    except Exception:
+        app.logger.exception("Prepared Telegram share failed")
+        return jsonify({"ok": False, "error": "Could not prepare the card for Telegram."}), 502
 
 @app.get("/avatar/<int:user_id>")
 def avatar(user_id):

@@ -16,12 +16,12 @@ A short in-memory cache is used to reduce repeated Telegram API requests.
 - Optional month selector (`YYYY-MM`)
 - Eligible-only public leaderboard (minimum 5 active days)
 - Same 0–100 Activity Score formula as the bot
-- Search by Telegram username or Telegram ID
-- Shows score, rank, active days, messages and estimated activity time
-- Telegram profile photo on leaderboard and member search result
+- No public member search or personal-activity lookup
+- Leaderboard shows profile name, profile photo and score only
 - Telegram Mini App support with server-side `initData` verification
 - `Get Your Activity Card` button in the Check Activity section
-- PNG download for the professional Activity Card
+- Professional Activity Card with PNG download
+- Native Telegram download, Story sharing and group-chat media sharing from the Mini App
 - Admin Activity Card funny-comment mode
 - `/health` endpoint for Render/UptimeRobot
 - Supabase PostgreSQL as the only data store
@@ -58,3 +58,6 @@ The website can be opened as a Telegram Mini App. The `Get Your Activity Card` b
 For the activity bot, add `WEBAPP_URL` with the exact HTTPS Render URL of this website. The bot can expose the Mini App with `/leaderboard` and the Telegram chat menu button.
 
 Do not trust a browser-supplied Telegram user ID; the website verifies `X-Telegram-Init-Data` with the bot token.
+
+### Telegram media sharing
+The Mini App temporarily uploads the rendered PNG to the website so Telegram can fetch it over HTTPS. Story sharing uses `shareToStory`; group sharing uses Telegram `shareMessage` with a prepared photo message restricted to group chats. Temporary card media expires after about one hour.
