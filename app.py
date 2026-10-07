@@ -1,5 +1,8 @@
 import os
 import re
+import hmac
+import hashlib
+import json
 from datetime import datetime
 import time
 from zoneinfo import ZoneInfo
@@ -9,6 +12,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import requests
 from flask import Flask, jsonify, render_template, request, Response
+from urllib.parse import parse_qsl
 
 app = Flask(__name__)
 
@@ -31,6 +35,29 @@ USERNAME_RE = re.compile(r"^@?[A-Za-z0-9_]{1,32}$")
 # Small in-memory cache so a leaderboard does not call Telegram repeatedly.
 PHOTO_CACHE = {}
 PHOTO_CACHE_TTL = 600
+
+ADMIN_COMMENTS = [
+    "👑 আপনি Admin! আপনার আবার Activity Score কীসের? আপনি তো activity-র হিসাব রাখেন! 😎",
+    "😂 আপনি হিসাব রাখেন সবার, আপনার হিসাব রাখবে কে?",
+    "🫡 Admin সাহেব, নিজের rank নিয়ে এত চিন্তা কেন? Group সামলান!",
+    "🏆 আপনার Rank: Admin Supreme! এই leaderboard-এ সেই rank-এর জায়গা নেই।",
+    "📢 আপনি Admin, আপনার activity গোপনীয়… অন্তত এই বটের কাছে! 🤫",
+    "🤣 আপনি /myrank দিয়েছেন কেন? নিজের কাছে নিজের রিপোর্ট জমা দেবেন নাকি?",
+    "👀 Admin হয়েও নিজের activity দেখতে চান? সন্দেহজনক ব্যাপার!",
+    "☕ আগে চা খান Admin সাহেব, Activity Score দিয়ে কী করবেন?",
+    "🫵 আপনি তো নিয়ম বানান! নিজের জন্য আবার নিয়মের দরকার কী?",
+    "🚨 সতর্কবার্তা: Admin-এর অতিরিক্ত rank-checking শনাক্ত করা হয়েছে!",
+    "🤖 আমার database-এ আপনার rank নেই, কারণ আপনাকে হিসাবের বাইরে রাখা হয়েছে!",
+    "😎 আপনি leaderboard দেখেন, leaderboard আপনাকে দেখে না!",
+    "📊 আপনার Activity Report: Admin হওয়াটাই আপনার সবচেয়ে বড় activity!",
+    "😂 আপনি কি নিজেকেও group থেকে ban করে activity বাড়াতে চান?",
+    "👑 Admin-এর rank জানতে হলে আগে Bot-এর permission নিতে হবে!",
+    "🫡 আপনার কাজ member-দের active রাখা, নিজের score দেখে active হওয়া নয়!",
+    "🤔 আপনি Admin, নাকি নিজের fan club-এর president?",
+    "📢 এই command সাধারণ সদস্যদের জন্য। Admin-দের জন্য আছে শুধু দায়িত্ব আর দুশ্চিন্তা!",
+    "💀 আবার /myrank? Admin সাহেব, আপনার কি leaderboard-এর সঙ্গে personal শত্রুতা আছে?",
+    "🎖️ অভিনন্দন! আপনি আজও Admin পদে বহাল আছেন। এর চেয়ে বড় achievement আর কী!",
+]
 
 
 def db():
@@ -146,6 +173,52 @@ def telegram_file_bytes(file_id):
         return None, None
 
 
+def validate_telegram_init_data(init_data):
+    if not BOT_TOKEN or not init_data:
+        return None
+    try:
+        pairs = parse_qsl(init_data, keep_blank_values=True)
+        data = dict(pairs)
+        received_hash = data.pop("hash", None)
+        if not received_hash:
+            return None
+        data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(data.items()))
+        secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+        calculated = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(calculated, received_hash):
+            return None
+        auth_date = int(data.get("auth_date", "0"))
+        if not auth_date or time.time() - auth_date > 86400:
+            return None
+        user = json.loads(data.get("user", "{}"))
+        if not user.get("id"):
+            return None
+        return user
+    except Exception:
+        return None
+
+
+def rank_for_user(month, user_id):
+    eligible_rows = [r for r in fetch_rows(month) if r["eligible"]]
+    return next((i + 1 for i, r in enumerate(eligible_rows) if int(r["user_id"]) == int(user_id)), None)
+
+
+def member_payload(row, month, rank=None, is_admin=False):
+    return {
+        "user_id": int(row["user_id"]),
+        "username": row.get("username") or "",
+        "first_name": row.get("first_name") or "Member",
+        "score": row["score"],
+        "rank": rank,
+        "eligible": row["eligible"],
+        "is_admin": bool(is_admin),
+        "active_days": int(row.get("active_days") or 0),
+        "message_count": int(row.get("message_count") or 0),
+        "estimated_time": duration(row.get("activity_time_seconds")),
+        "month": month,
+    }
+
+
 @app.get("/")
 def index():
     return render_template("index.html", month=current_month())
@@ -225,6 +298,36 @@ def search_member():
     except Exception:
         app.logger.exception("Member search failed")
         return jsonify({"ok": False, "error": "Search unavailable."}), 500
+
+
+@app.get("/api/me")
+def my_activity():
+    init_data = request.headers.get("X-Telegram-Init-Data", "")
+    user = validate_telegram_init_data(init_data)
+    if not user:
+        return jsonify({"ok": False, "error": "Open this Activity Mini App from Telegram."}), 401
+    try:
+        month = valid_month(request.args.get("month"))
+        with db() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT user_id, username, first_name, message_count, active_days, activity_time_seconds
+                    FROM public.activity_logs
+                    WHERE chat_id=%s AND month=%s AND user_id=%s
+                    LIMIT 1
+                """, (int(GROUP_ID), month, int(user["id"])))
+                row = cur.fetchone()
+        if not row:
+            return jsonify({"ok": False, "error": "এই মাসে আপনার কোনো activity record পাওয়া যায়নি।"}), 404
+        row["score"] = score(row)
+        row["eligible"] = int(row.get("active_days") or 0) >= MIN_ACTIVE_DAYS
+        is_admin = bool(ADMIN_ID and int(ADMIN_ID) == int(user["id"]))
+        return jsonify({"ok": True, "month": month, "member": member_payload(row, month, rank_for_user(month, user["id"]), is_admin)})
+    except ValueError:
+        return jsonify({"ok": False, "error": "Invalid month. Use YYYY-MM."}), 400
+    except Exception:
+        app.logger.exception("Mini App activity lookup failed")
+        return jsonify({"ok": False, "error": "Activity unavailable."}), 500
 
 
 @app.get("/avatar/<int:user_id>")

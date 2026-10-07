@@ -13,3 +13,5 @@ services:
         sync: false
       - key: GROUP_ID
         sync: false
+      - key: ADMIN_ID
+        sync: false

@@ -19,6 +19,10 @@ A short in-memory cache is used to reduce repeated Telegram API requests.
 - Search by Telegram username or Telegram ID
 - Shows score, rank, active days, messages and estimated activity time
 - Telegram profile photo on leaderboard and member search result
+- Telegram Mini App support with server-side `initData` verification
+- `Get Your Activity Card` button in the Check Activity section
+- PNG download for the professional Activity Card
+- Admin Activity Card funny-comment mode
 - `/health` endpoint for Render/UptimeRobot
 - Supabase PostgreSQL as the only data store
 
@@ -28,6 +32,7 @@ Set these on the **website's Render Web Service**:
 - `DATABASE_URL` — same Supabase PostgreSQL connection string used by the bot
 - `BOT_TOKEN` — **same Telegram bot token used by the activity bot**; server-side only
 - `GROUP_ID` — the INFO GROUP numeric chat ID
+- `ADMIN_ID` — Telegram ID of the main admin (used for admin card behavior)
 
 ### Important
 `BOT_TOKEN` must be added to the **website Render service**, even if the bot already has it in a different Render service. Environment variables are service-specific.
@@ -46,3 +51,10 @@ Health check:
 
 ## UptimeRobot
 Monitor the website's `/health` URL with an HTTP monitor. The endpoint returns HTTP 200 when the web service is running.
+
+## Telegram Mini App
+The website can be opened as a Telegram Mini App. The `Get Your Activity Card` button uses Telegram `initData` and the server verifies it before returning the logged-in user's own activity.
+
+For the activity bot, add `WEBAPP_URL` with the exact HTTPS Render URL of this website. The bot can expose the Mini App with `/leaderboard` and the Telegram chat menu button.
+
+Do not trust a browser-supplied Telegram user ID; the website verifies `X-Telegram-Init-Data` with the bot token.
