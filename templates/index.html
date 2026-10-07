@@ -2,15 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#101828">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0b1020">
   <title>INFO GROUP • Activity Leaderboard</title>
   <link rel="stylesheet" href="/static/style.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 </head>
 <body>
   <main class="shell">
     <section class="hero">
-      <div class="brand"><span class="brand-dot"></span> INFO GROUP</div>
+      <div class="hero-top"><div class="brand"><span class="brand-dot"></span> INFO GROUP</div><button id="themeToggle" class="theme-btn" aria-label="Toggle theme">☀️</button></div>
       <h1>🏆 Activity Leaderboard</h1>
       <p>Consistent activity. Better score. Higher rank.</p>
       <div class="controls">
@@ -21,8 +23,8 @@
 
     <section class="search-card">
       <div>
-        <h2>🔎 Check Your Activity</h2>
-        <p>Username or Telegram ID দিয়ে আপনার score, rank ও estimated activity time দেখুন।</p>
+        <h2>🔎 Check Activity</h2>
+        <p>Username or Telegram ID দিয়ে member খুঁজুন। Personal data দেখতে <b>View Activity</b> চাপুন।</p>
       </div>
       <div class="search-row">
         <input id="search" autocomplete="off" placeholder="@username or Telegram ID">
@@ -41,7 +43,37 @@
       <div id="leaderboard" class="leaderboard"></div>
     </section>
 
-    <footer>Activity Score is calculated from active days, estimated activity time and message count. Minimum 5 active days required for leaderboard eligibility.</footer>
+    <div id="detailsModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close="1"></div>
+      <div class="modal-card">
+        <button class="modal-close" id="closeModal">×</button>
+        <div id="detailsContent"></div>
+      </div>
+    </div>
+
+    <div id="cardModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-card="1"></div>
+      <div class="modal-card card-modal">
+        <button class="modal-close" id="closeCard">×</button>
+        <div id="activityCard" class="activity-card">
+          <div class="card-glow"></div>
+          <div class="card-brand">INFO GROUP <span>ACTIVITY REPORT</span></div>
+          <div class="card-profile"><img id="cardAvatar" src="" alt=""><div><div id="cardName" class="card-name"></div><div id="cardHandle" class="card-handle"></div></div></div>
+          <div class="card-score"><span>ACTIVITY SCORE</span><strong id="cardScore">0.00</strong><small>/ 100</small></div>
+          <div class="card-grid">
+            <div><b id="cardRank">—</b><span>RANK</span></div>
+            <div><b id="cardDays">0</b><span>ACTIVE DAYS</span></div>
+            <div><b id="cardTime">0m</b><span>EST. ACTIVE TIME</span></div>
+            <div><b id="cardMessages">0</b><span>MESSAGES</span></div>
+          </div>
+          <div id="cardStatus" class="card-status"></div>
+          <div class="card-footer">Consistency • Activity • Community</div>
+        </div>
+        <button id="downloadCard" class="download-btn">⬇️ Download Activity Card (PNG)</button>
+      </div>
+    </div>
+
+    <footer>Activity Score = active days 40% + estimated activity time 35% + messages 25%. Minimum 5 active days required for leaderboard eligibility.</footer>
   </main>
   <script src="/static/app.js"></script>
 </body>
