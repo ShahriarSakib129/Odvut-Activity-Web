@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from io import BytesIO
 import base64
 import secrets
+import threading
 from pathlib import Path
 
 import psycopg2
@@ -36,11 +37,10 @@ WEIGHT_MESSAGES = 0.25
 USERNAME_RE = re.compile(r"^@?[A-Za-z0-9_]{1,32}$")
 
 # Small in-memory cache so a leaderboard does not call Telegram repeatedly.
-# Profile-photo cache: keep the downloaded image in memory, not only file_id.
-# This prevents repeated Telegram API calls on every leaderboard refresh.
 PHOTO_CACHE = {}
-PHOTO_CACHE_TTL = 21600
-PHOTO_FAILURE_TTL = 60
+PHOTO_CACHE_TTL = 21600  # 6 hours
+PHOTO_FAILURE_TTL = 60   # retry temporary Telegram failures quickly
+PHOTO_CACHE_LOCK = threading.Lock()
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "/tmp/odvut_activity_media"))
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 MEDIA_TTL = 3600
@@ -136,70 +136,82 @@ def public_row(r, rank=None):
     }
 
 
-def telegram_profile_photo(user_id):
-    """Return (image_bytes, content_type) for a user's Telegram profile photo."""
+def telegram_file_bytes_for_user(user_id):
+    """Fetch and cache the actual Telegram profile image bytes.
+
+    Caching the bytes (rather than only file_id) prevents every leaderboard
+    image request from making two Telegram API calls. Temporary failures are
+    cached only briefly so a transient timeout does not make an avatar stay
+    blank for hours.
+    """
     if not BOT_TOKEN:
         return None, None
 
     user_id = int(user_id)
     now = time.time()
-    cached = PHOTO_CACHE.get(user_id)
-    if cached and now - cached[0] < (PHOTO_CACHE_TTL if cached[1] else PHOTO_FAILURE_TTL):
-        return cached[1], cached[2]
+    with PHOTO_CACHE_LOCK:
+        cached = PHOTO_CACHE.get(user_id)
+    if cached:
+        age = now - cached.get("time", 0)
+        ttl = PHOTO_FAILURE_TTL if cached.get("failed") else PHOTO_CACHE_TTL
+        if age < ttl:
+            return cached.get("data"), cached.get("content_type")
 
+    api = f"https://api.telegram.org/bot{BOT_TOKEN}"
     try:
         resp = requests.get(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/getUserProfilePhotos",
-            params={"user_id": user_id, "limit": 1},
-            timeout=8,
+            f"{api}/getUserProfilePhotos",
+            params={"user_id": user_id, "offset": 0, "limit": 1},
+            timeout=6,
         )
         resp.raise_for_status()
-        data = resp.json()
-        if not data.get("ok", False):
-            raise RuntimeError(data.get("description", "Telegram API error"))
-
-        photos = data.get("result", {}).get("photos", [])
+        result = resp.json().get("result") or {}
+        photos = result.get("photos") or []
         if not photos:
-            PHOTO_CACHE[user_id] = (now, None, None)
+            with PHOTO_CACHE_LOCK:
+                PHOTO_CACHE[user_id] = {"time": now, "data": None, "content_type": None, "failed": True}
             return None, None
 
-        photo_size = photos[0][-1]
-        file_id = photo_size.get("file_id")
+        # Telegram normally returns several PhotoSize entries; use the
+        # largest one (last entry) for the leaderboard/card.
+        sizes = photos[0] or []
+        file_id = (sizes[-1] or {}).get("file_id") if sizes else None
         if not file_id:
-            raise RuntimeError("Telegram returned a photo without file_id")
+            raise RuntimeError("Telegram returned a profile photo without file_id")
 
-        r = requests.get(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
+        file_resp = requests.get(
+            f"{api}/getFile",
             params={"file_id": file_id},
+            timeout=6,
+        )
+        file_resp.raise_for_status()
+        file_path = (file_resp.json().get("result") or {}).get("file_path")
+        if not file_path:
+            raise RuntimeError("Telegram returned no file_path")
+
+        image_resp = requests.get(
+            f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}",
             timeout=8,
         )
-        r.raise_for_status()
-        file_data = r.json()
-        if not file_data.get("ok", False):
-            raise RuntimeError(file_data.get("description", "Telegram getFile error"))
-
-        path = file_data.get("result", {}).get("file_path")
-        if not path:
-            raise RuntimeError("Telegram did not return file_path")
-
-        image = requests.get(
-            f"https://api.telegram.org/file/bot{BOT_TOKEN}/{path}",
-            timeout=10,
-        )
-        image.raise_for_status()
-        content = image.content
-        if not content:
-            raise RuntimeError("Empty profile photo response")
-
-        content_type = image.headers.get("Content-Type", "image/jpeg")
-        PHOTO_CACHE[user_id] = (now, content, content_type)
-        return content, content_type
+        image_resp.raise_for_status()
+        data = image_resp.content
+        if not data:
+            raise RuntimeError("Telegram returned an empty image")
+        content_type = image_resp.headers.get("Content-Type", "image/jpeg")
+        with PHOTO_CACHE_LOCK:
+            PHOTO_CACHE[user_id] = {
+                "time": time.time(),
+                "data": data,
+                "content_type": content_type,
+                "failed": False,
+            }
+        return data, content_type
     except Exception as exc:
-        # Retry temporary failures after a short period instead of keeping a
-        # blank avatar cached for the full success-cache lifetime.
-        app.logger.warning("Telegram profile photo failed for %s: %s", user_id, exc)
-        PHOTO_CACHE[user_id] = (now, None, None)
+        app.logger.warning("Profile photo fetch failed for user %s: %s", user_id, exc)
+        with PHOTO_CACHE_LOCK:
+            PHOTO_CACHE[user_id] = {"time": time.time(), "data": None, "content_type": None, "failed": True}
         return None, None
+
 
 
 def validate_telegram_init_data(init_data):
@@ -482,26 +494,12 @@ def prepare_share():
 
 @app.get("/avatar/<int:user_id>")
 def avatar(user_id):
-    data, content_type = telegram_profile_photo(user_id)
-    if data:
-        return Response(
-            data,
-            mimetype=content_type or "image/jpeg",
-            headers={"Cache-Control": "public, max-age=21600", "X-Avatar-Source": "telegram"},
-        )
-
-    # Visible fallback instead of a transparent 1x1 image.
-    fallback = """<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
-  <rect width="160" height="160" rx="80" fill="#252b3a"/>
-  <circle cx="80" cy="63" r="27" fill="#9aa3b2"/>
-  <path d="M35 137c4-29 21-43 45-43s41 14 45 43" fill="#9aa3b2"/>
-</svg>"""
-    return Response(
-        fallback,
-        mimetype="image/svg+xml",
-        headers={"Cache-Control": "public, max-age=300", "X-Avatar-Source": "fallback"},
-    )
+    data, content_type = telegram_file_bytes_for_user(user_id)
+    if not data:
+        # Visible fallback instead of a transparent 1x1 image.
+        placeholder = b'''<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96"><rect width="96" height="96" rx="48" fill="#252b3a"/><circle cx="48" cy="38" r="17" fill="#8b93a7"/><path d="M19 80c4-17 15-26 29-26s25 9 29 26" fill="#8b93a7"/></svg>'''
+        return Response(placeholder, mimetype="image/svg+xml", headers={"Cache-Control": "public, max-age=60"})
+    return Response(data, mimetype=content_type, headers={"Cache-Control": "public, max-age=21600"})
 
 
 if __name__ == "__main__":
