@@ -61,3 +61,7 @@ Do not trust a browser-supplied Telegram user ID; the website verifies `X-Telegr
 
 ### Telegram media sharing
 The Mini App temporarily uploads the rendered PNG to the website so Telegram can fetch it over HTTPS. Story sharing uses `shareToStory`; group sharing uses Telegram `shareMessage` with a prepared photo message restricted to group chats. Temporary card media expires after about one hour.
+
+
+### Avatar v3 fix
+The leaderboard warms Telegram profile-photo cache concurrently before returning results, preventing the first few avatar requests from monopolizing the single Gunicorn worker.

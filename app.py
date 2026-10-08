@@ -11,6 +11,7 @@ import base64
 import secrets
 import threading
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -44,6 +45,7 @@ PHOTO_CACHE_LOCK = threading.Lock()
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "/tmp/odvut_activity_media"))
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 MEDIA_TTL = 3600
+AVATAR_EXECUTOR = ThreadPoolExecutor(max_workers=8)
 
 ADMIN_COMMENTS = [
     "👑 আপনি Admin! আপনার আবার Activity Score কীসের? আপনি তো activity-র হিসাব রাখেন! 😎",
@@ -306,6 +308,15 @@ def leaderboard():
         # Public leaderboard: eligible members only, matching /top rules.
         eligible = eligible[:100]
         data = [public_row(r, i + 1) for i, r in enumerate(eligible)]
+        # Warm the avatar cache concurrently before returning the leaderboard.
+        # With Gunicorn's single worker, doing these network calls one-by-one
+        # can make only the first few browser image requests complete in time.
+        futures = [AVATAR_EXECUTOR.submit(telegram_file_bytes_for_user, m["user_id"]) for m in data]
+        for future in futures:
+            try:
+                future.result(timeout=25)
+            except Exception:
+                pass
         return jsonify({"ok": True, "month": month, "count": len(data), "members": data})
     except ValueError:
         return jsonify({"ok": False, "error": "Invalid month. Use YYYY-MM."}), 400
