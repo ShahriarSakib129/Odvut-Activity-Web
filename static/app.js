@@ -24,7 +24,7 @@ function load(){
       if(!d.ok){empty.textContent=d.error;empty.classList.remove('hidden');return}
       label.textContent=d.month; count.textContent=`${d.count} eligible members`;
       if(!d.members.length){empty.classList.remove('hidden');return}
-      board.innerHTML=d.members.map(m=>`<div class="row ${m.rank<=3?'top':''}"><div class="pos">${medal(m.rank)}</div><img class="row-avatar" src="${avatar(m)}" loading="lazy" onerror="this.style.visibility='hidden'"><div class="person"><div class="name">${esc(m.first_name)}</div><div class="handle">Eligible member</div></div><div class="score">${Number(m.score).toFixed(2)}<small>/100</small></div></div>`).join('');
+      board.innerHTML=d.members.map(m=>`<div class="row ${m.rank<=3?'top':''}"><div class="pos">${medal(m.rank)}</div><img class="row-avatar" src="${avatar(m)}" loading="lazy"><div class="person"><div class="name">${esc(m.first_name)}</div><div class="handle">Eligible member</div></div><div class="score">${Number(m.score).toFixed(2)}<small>/100</small></div></div>`).join('');
     })
     .catch(()=>{loading.classList.add('hidden');empty.textContent='Could not load leaderboard.';empty.classList.remove('hidden')});
 }
